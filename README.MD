@@ -21,21 +21,18 @@ cp .env.example .env        # set OPENCONNECT_URL (nonsecret HTTPS URL) and, if 
 sh build_and_run_locally.sh # builds the image and runs `docker compose up -d --build`
 ```
 
-Or run the published image directly (SOCKS port published on host loopback only):
+Or run the published image directly (minimal; SOCKS port published on host loopback only):
 
 ```bash
 docker run -d --name openconnect-ocproxy --init \
-  --user 12345:12345 --read-only --cap-drop ALL --security-opt no-new-privileges:true \
-  --tmpfs /run/vpn:rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=12345,gid=12345 \
-  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777 \
   -e OPENCONNECT_URL="https://vpn.example.org" \
-  -e OPENCONNECT_PROTOCOL=anyconnect \
-  -p 127.0.0.1:1080:9876/tcp \
-  --restart unless-stopped \
+  -p 127.0.0.1:1080:9876 \
   ghcr.io/matteosecli/openconnect-ocproxy:latest
 ```
 
-Do not publish with a plain `-p 1080:9876`: that usually exposes the unauthenticated proxy on all host interfaces. The container needs no privileged mode, `NET_ADMIN`, TUN device or host networking.
+The `vpn-login`, `vpn-status` and `vpn-service` programs live **inside the image** (`/usr/local/bin`; sources in `build/bin`), so you run them with `docker exec`, not on the host.
+
+Do not publish with a plain `-p 1080:9876`: that exposes the unauthenticated proxy on all host interfaces. No privileged mode, `NET_ADMIN`, TUN device or host networking is needed. For extra hardening add `--read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /run/vpn:uid=12345,gid=12345,mode=0700 --tmpfs /tmp` (this is what `build/compose.yaml` does); it is optional.
 
 ### 2. Authenticate (and renew)
 
