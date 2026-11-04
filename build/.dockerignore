@@ -1,0 +1,10 @@
+**/.git
+**/.env
+**/.env.*
+**/credentials*
+**/secrets*
+**/*.log
+**/*.key
+**/runtime
+tests
+VALIDATION.md

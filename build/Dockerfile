@@ -1,28 +1,32 @@
 FROM alpine:3.24.3
 
-ARG USER=docker
+ARG USER=vpn
+ARG UID=12345
 
-# Without the leading "v"; Alpine stable package, then Alpine edge package, then source build
+# openconnect, without the leading "v": Alpine stable package, then Alpine edge package,
+# then a source build (pinned release tarball first, GitLab tag as last resort).
 ARG OPENCONNECT_VERSION=9.21
+# SHA-256 of the signed upstream release tarball (verified against the maintainer's detached signature)
+ARG OPENCONNECT_SHA256=5b32369467db6e5f317aa1ed12cfcbb81ed00bdbc765450b6bfcbdc300944a58
 ARG OPENCONNECT_TARBALL_URL=https://www.infradead.org/openconnect/download/openconnect-${OPENCONNECT_VERSION}.tar.gz
 ARG OPENCONNECT_GIT_URL=https://gitlab.com/openconnect/openconnect.git
 ARG ALPINE_EDGE_COMMUNITY=https://dl-cdn.alpinelinux.org/alpine/edge/community
-# With the leading "v"; a musl release binary is preferred, source build is the fallback
+
+# ocproxy, with the leading "v": musl release binary, else source build.
+# Pinned checksums are used when set for the target architecture, otherwise the release's SHA256SUMS.
 ARG OCPROXY_VERSION=v2.0.0-rc.2
 ARG OCPROXY_REPO=https://github.com/matteosecli/ocproxy
+ARG OCPROXY_SHA256_AMD64=37a6233a175a403575c01c8fd17dbf5c2a5e4707193fcc370e0291dce775cc66
+ARG OCPROXY_SHA256_ARM64=d079641bd1ffb1aea0da4806238d87a00e22d2c05236aeb8053e628ca746f62b
 
-RUN addgroup -S "$USER" && \
-    adduser \
-    --disabled-password \
-    --gecos "" \
-    --ingroup "$USER" \
-    --no-create-home \
-    --uid "12345" \
-    "$USER"
+# Runtime tools needed by the supervisor/login scripts (GNU date/timeout/head, flock, setsid, curl)
+RUN apk add --no-cache bash coreutils util-linux curl ca-certificates tzdata && \
+    addgroup -S -g "$UID" "$USER" && \
+    adduser -S -D -H -u "$UID" -G "$USER" "$USER" && \
+    mkdir -p /run/vpn /usr/local/libexec && \
+    chown "$UID:$UID" /run/vpn
 
-RUN apk add --no-cache ca-certificates tzdata
-
-# openconnect: Alpine package (stable, then edge) if the requested version exists, otherwise build from source and drop the build deps in the same layer
+# openconnect: build deps are removed in the same layer
 RUN set -eux; \
     if apk add --no-cache "openconnect~=${OPENCONNECT_VERSION}"; then \
         echo "Installed openconnect ${OPENCONNECT_VERSION} from Alpine stable packages"; \
@@ -30,39 +34,55 @@ RUN set -eux; \
         echo "Installed openconnect ${OPENCONNECT_VERSION} from Alpine edge packages"; \
     else \
         echo "openconnect ${OPENCONNECT_VERSION} not in Alpine packages, building from source"; \
-        apk add --no-cache vpnc iproute2 libxml2 lz4-libs krb5-libs pcsc-lite-libs libproxy oath-toolkit-libpskc stoken zlib openssl; \
+        apk add --no-cache gnutls libxml2 zlib lz4-libs; \
         apk add --no-cache --virtual .oc-build-deps \
-            curl build-base autoconf automake libtool gettext-dev pkgconf linux-headers git \
-            openssl-dev libxml2-dev lz4-dev krb5-dev pcsc-lite-dev libproxy-dev oath-toolkit-dev stoken-dev zlib-dev; \
+            build-base pkgconf linux-headers gnutls-dev libxml2-dev zlib-dev lz4-dev; \
         mkdir /tmp/openconnect-src; \
-        if curl -fsSL "${OPENCONNECT_TARBALL_URL}" | tar xz -C /tmp/openconnect-src --strip-components=1; then \
-            cd /tmp/openconnect-src; \
+        if curl -fsSL --retry 3 "${OPENCONNECT_TARBALL_URL}" -o /tmp/openconnect.tar.gz \
+            && echo "${OPENCONNECT_SHA256}  /tmp/openconnect.tar.gz" | sha256sum -c -; then \
+            tar -xzf /tmp/openconnect.tar.gz -C /tmp/openconnect-src --strip-components=1; \
         else \
+            echo "Pinned release tarball unavailable, falling back to the unsigned git tag"; \
+            apk add --no-cache --virtual .oc-git-deps git autoconf automake libtool gettext-dev; \
             rm -rf /tmp/openconnect-src; \
             git clone --depth 1 --branch "v${OPENCONNECT_VERSION}" "${OPENCONNECT_GIT_URL}" /tmp/openconnect-src; \
-            cd /tmp/openconnect-src; \
+            (cd /tmp/openconnect-src && sh autogen.sh); \
         fi; \
-        [ -x configure ] || sh autogen.sh; \
-        ./configure --prefix=/usr --with-vpnc-script=/etc/vpnc/vpnc-script --without-gnutls --with-openssl; \
+        cd /tmp/openconnect-src; \
+        ./configure --prefix=/usr/local --disable-nls --without-libproxy --without-libpskc \
+            --with-vpnc-script=/usr/local/libexec/vpnc-script-unused; \
         make -j"$(nproc)"; \
         make install-strip; \
+        printf '#!/bin/sh\necho "This image requires --script-tun with its proxy helper." >&2\nexit 1\n' \
+            > /usr/local/libexec/vpnc-script-unused; \
+        chmod 755 /usr/local/libexec/vpnc-script-unused; \
         cd /; \
-        rm -rf /tmp/openconnect-src; \
+        rm -rf /tmp/openconnect-src /tmp/openconnect.tar.gz; \
         apk del --no-cache .oc-build-deps; \
+        apk del --no-cache .oc-git-deps 2>/dev/null || true; \
     fi; \
-    openconnect --version
+    mkdir -p /usr/local/sbin; \
+    [ -x /usr/local/sbin/openconnect ] || ln -s "$(command -v openconnect)" /usr/local/sbin/openconnect; \
+    /usr/local/sbin/openconnect --version
 
-# ocproxy: musl release binary if available/compatible, otherwise build from source and drop the build deps in the same layer
+# ocproxy: build deps are removed in the same layer
 RUN set -eux; \
-    apk add --no-cache --virtual .ocproxy-fetch-deps curl; \
     install_binary() { \
-        case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) return 1 ;; esac; \
-        name="ocproxy-${OCPROXY_VERSION}-linux-musl-${arch}.tar.gz"; \
+        case "$(uname -m)" in \
+            x86_64) arch=amd64; pinned="${OCPROXY_SHA256_AMD64}" ;; \
+            aarch64) arch=arm64; pinned="${OCPROXY_SHA256_ARM64}" ;; \
+            *) return 1 ;; \
+        esac; \
+        name="ocproxy-${OCPROXY_VERSION}-linux-musl-${arch}"; \
         mkdir /tmp/ocproxy-bin && cd /tmp/ocproxy-bin; \
-        curl -fsSLO "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/${name}"; \
-        curl -fsSLO "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/SHA256SUMS"; \
-        grep " ${name}\$" SHA256SUMS | sha256sum -c -; \
-        tar xzf "${name}" --strip-components=1; \
+        curl -fsSLO "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/${name}.tar.gz"; \
+        if [ -n "$pinned" ]; then \
+            printf '%s  %s\n' "$pinned" "${name}.tar.gz" | sha256sum -c -; \
+        else \
+            curl -fsSLO "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/SHA256SUMS"; \
+            grep " ${name}.tar.gz\$" SHA256SUMS | sha256sum -c -; \
+        fi; \
+        tar xzf "${name}.tar.gz" --strip-components=1; \
         install -m 0755 ocproxy /usr/local/bin/ocproxy; \
         ocproxy -h >/dev/null; \
     }; \
@@ -85,14 +105,15 @@ RUN set -eux; \
         ocproxy -h >/dev/null; \
     fi; \
     cd /; \
-    rm -rf /tmp/ocproxy-bin /tmp/ocproxy-src; \
-    apk del --no-cache .ocproxy-fetch-deps
+    rm -rf /tmp/ocproxy-bin /tmp/ocproxy-src
 
-WORKDIR /openconnect-proxy
-COPY ./entrypoint.sh .
+COPY --chmod=755 libexec/ /usr/local/libexec/
+COPY --chmod=755 bin/ /usr/local/bin/
 
-USER $USER
+USER $UID:$UID
+
+ENV VPN_RUNTIME=/run/vpn OPENCONNECT_BIN=/usr/local/sbin/openconnect
 
 EXPOSE 9876
 
-ENTRYPOINT ["/openconnect-proxy/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/vpn-service"]

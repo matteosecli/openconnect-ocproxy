@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Sourced by the reference programs. No configuration file is executed as code.
+set +x
+set -euo pipefail
+umask 077
+ulimit -c 0
+export LC_ALL=C TZ=UTC
+VPN_RUNTIME=${VPN_RUNTIME:-/run/vpn}
+OPENCONNECT_BIN=${OPENCONNECT_BIN:-/usr/local/sbin/openconnect}
+VPN_LIBEXEC=${VPN_LIBEXEC:-/usr/local/libexec}
+
+runtime_check() {
+    [[ -d $VPN_RUNTIME && ! -L $VPN_RUNTIME && -O $VPN_RUNTIME ]] || {
+        echo 'VPN runtime directory must exist and belong to the service user.' >&2; return 1;
+    }
+    chmod 700 "$VPN_RUNTIME"
+}
+
+config_args() {
+    [[ -z ${OPENCONNECT_OPTIONS:-} ]] || {
+        echo 'Migrate OPENCONNECT_OPTIONS to the one-argument-per-line file.' >&2; return 1;
+    }
+    : "${OPENCONNECT_URL:?Set a nonsecret HTTPS VPN URL}"
+    [[ $OPENCONNECT_URL == https://* && $OPENCONNECT_URL != *$'\n'* && $OPENCONNECT_URL != *$'\r'* ]] || return 1
+    [[ $OPENCONNECT_URL != *'@'* && $OPENCONNECT_URL != *'?'* && $OPENCONNECT_URL != *'#'* && $OPENCONNECT_URL != *[[:space:]]* ]] || {
+        echo 'Use a VPN URL without userinfo, query strings, fragments, or spaces.' >&2; return 1;
+    }
+    local name value
+    for name in VPN_RECONNECT_TIMEOUT VPN_STARTUP_TIMEOUT VPN_EXPIRY_WARNING_SECONDS; do
+        value=${!name:-}
+        [[ -z $value || $value =~ ^(0|[1-9][0-9]{0,7})$ ]] || {
+            echo 'Invalid numeric VPN timeout setting.' >&2; return 1;
+        }
+    done
+    [[ ${VPN_DISABLE_DTLS:-0} == 0 || ${VPN_DISABLE_DTLS:-0} == 1 ]] || return 1
+    common_args=(--no-proxy "--protocol=${OPENCONNECT_PROTOCOL:-anyconnect}")
+    [[ -z ${OPENCONNECT_SERVERCERT:-} ]] || common_args+=(--servercert "$OPENCONNECT_SERVERCERT")
+    [[ -z ${OPENCONNECT_CAFILE:-} ]] || common_args+=(--cafile "$OPENCONNECT_CAFILE")
+    # 9.21's upstream user-agent is the default. This is an optional override.
+    [[ -z ${OPENCONNECT_USERAGENT:-} ]] || common_args+=(--useragent "$OPENCONNECT_USERAGENT")
+    if [[ -n ${OPENCONNECT_ARGS_FILE:-} ]]; then
+        [[ -f $OPENCONNECT_ARGS_FILE && -r $OPENCONNECT_ARGS_FILE ]] || return 1
+        while IFS= read -r option || [[ -n $option ]]; do
+            case "$option" in
+                ''|'#'*) continue ;;
+                --authgroup=*|--usergroup=*|--os=*|--sni=*|--resolve=*|--mtu=*|--base-mtu=*|--disable-ipv6)
+                    common_args+=("$option") ;;
+                *) echo 'Unsupported option in nonsecret argument file.' >&2; return 1 ;;
+            esac
+        done < "$OPENCONNECT_ARGS_FILE"
+    fi
+}
+
+# Parse only OpenConnect 9.21's five assignment fields. Never eval/source them.
+# Unsupported quoting, duplicates, control characters, or extra fields fail closed.
+parse_session() {
+    local raw=$1 line key value
+    local assignment="^(COOKIE|HOST|CONNECT_URL|FINGERPRINT|RESOLVE)='([^']*)'$"
+    local -A seen=()
+    unset COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE
+    (( ${#raw} > 0 && ${#raw} <= 16384 )) || return 1
+    [[ $raw != *$'\r'* ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == 'RESOLVE=' ]]; then key=RESOLVE; value=''
+        elif [[ $line =~ $assignment ]]; then key=${BASH_REMATCH[1]}; value=${BASH_REMATCH[2]}
+        else return 1
+        fi
+        [[ ! ${seen[$key]+yes} ]] || return 1
+        seen[$key]=1
+        (( ${#value} <= 8192 )) || return 1
+        [[ $value != *[[:cntrl:]]* ]] || return 1
+        printf -v "$key" '%s' "$value"
+    done <<< "$raw"
+    (( ${#seen[@]} == 5 )) || return 1
+    [[ -n $COOKIE && -n $HOST && $CONNECT_URL == https://* && -n $FINGERPRINT ]] || return 1
+    [[ $CONNECT_URL != *'@'* && $CONNECT_URL != *'?'* && $CONNECT_URL != *'#'* && $CONNECT_URL != *[[:space:]]* ]] || return 1
+    [[ $FINGERPRINT =~ ^(pin-sha256:|sha256:|sha1:)?[A-Za-z0-9+/=]+$ ]] || return 1
+    export -n COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE 2>/dev/null || true
+}
+
+write_state() {
+    local state=$1 reason=$2 tmp
+    tmp=$(mktemp "$VPN_RUNTIME/.status.XXXXXXXX")
+    printf 'state=%s\nreason=%s\ntunnel_pid=%s\nexpires_epoch=%s\n' \
+        "$state" "$reason" "${tunnel_pid:-}" "${expires_epoch:-}" > "$tmp"
+    mv -f -- "$tmp" "$VPN_RUNTIME/status"
+}
+
+# /proc identity prevents signalling an unrelated process after PID reuse.
+process_identity() {
+    local pid=$1 stat
+    local -a fields
+    [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/stat ]] || return 1
+    stat=$(< "/proc/$pid/stat")
+    stat=${stat##*) }
+    read -r -a fields <<< "$stat"
+    printf '%s %s\n' "$pid" "${fields[19]}"
+}

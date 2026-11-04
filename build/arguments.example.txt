@@ -1,0 +1,5 @@
+# Nonsecret options only; one complete argument per line, without shell quoting.
+# No argument splitting, variable expansion, or command substitution is performed.
+# --authgroup=Example group
+# --usergroup=Example path
+# --mtu=1200
