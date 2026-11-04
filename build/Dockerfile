@@ -19,8 +19,11 @@ ARG OCPROXY_REPO=https://github.com/matteosecli/ocproxy
 ARG OCPROXY_SHA256_AMD64=37a6233a175a403575c01c8fd17dbf5c2a5e4707193fcc370e0291dce775cc66
 ARG OCPROXY_SHA256_ARM64=d079641bd1ffb1aea0da4806238d87a00e22d2c05236aeb8053e628ca746f62b
 
-# Runtime tools needed by the supervisor/login scripts (GNU date/timeout/head, flock, setsid, curl)
-RUN apk add --no-cache bash coreutils util-linux curl ca-certificates tzdata && \
+# Only bash is added on top of the base image (busybox provides timeout/flock/setsid/date/mktemp/mkfifo).
+# curl is needed only for the optional VPN_HEALTH_URL startup probe: build with --build-arg INSTALL_CURL=1.
+ARG INSTALL_CURL=0
+RUN apk add --no-cache bash && \
+    if [ "$INSTALL_CURL" = 1 ]; then apk add --no-cache curl; fi && \
     addgroup -S -g "$UID" "$USER" && \
     adduser -S -D -H -u "$UID" -G "$USER" "$USER" && \
     mkdir -p /run/vpn /usr/local/libexec && \
@@ -34,11 +37,11 @@ RUN set -eux; \
         echo "Installed openconnect ${OPENCONNECT_VERSION} from Alpine edge packages"; \
     else \
         echo "openconnect ${OPENCONNECT_VERSION} not in Alpine packages, building from source"; \
-        apk add --no-cache gnutls libxml2 zlib lz4-libs; \
+        apk add --no-cache libssl3 libcrypto3 libxml2 zlib lz4-libs; \
         apk add --no-cache --virtual .oc-build-deps \
-            build-base pkgconf linux-headers gnutls-dev libxml2-dev zlib-dev lz4-dev; \
+            build-base pkgconf linux-headers openssl-dev libxml2-dev zlib-dev lz4-dev; \
         mkdir /tmp/openconnect-src; \
-        if curl -fsSL --retry 3 "${OPENCONNECT_TARBALL_URL}" -o /tmp/openconnect.tar.gz \
+        if wget -q -O /tmp/openconnect.tar.gz "${OPENCONNECT_TARBALL_URL}" \
             && echo "${OPENCONNECT_SHA256}  /tmp/openconnect.tar.gz" | sha256sum -c -; then \
             tar -xzf /tmp/openconnect.tar.gz -C /tmp/openconnect-src --strip-components=1; \
         else \
@@ -49,7 +52,7 @@ RUN set -eux; \
             (cd /tmp/openconnect-src && sh autogen.sh); \
         fi; \
         cd /tmp/openconnect-src; \
-        ./configure --prefix=/usr/local --disable-nls --without-libproxy --without-libpskc \
+        ./configure --prefix=/usr/local --disable-nls --with-openssl --without-gnutls --without-libproxy --without-libpskc \
             --with-vpnc-script=/usr/local/libexec/vpnc-script-unused; \
         make -j"$(nproc)"; \
         make install-strip; \
@@ -75,11 +78,11 @@ RUN set -eux; \
         esac; \
         name="ocproxy-${OCPROXY_VERSION}-linux-musl-${arch}"; \
         mkdir /tmp/ocproxy-bin && cd /tmp/ocproxy-bin; \
-        curl -fsSLO "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/${name}.tar.gz"; \
+        wget -q "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/${name}.tar.gz"; \
         if [ -n "$pinned" ]; then \
             printf '%s  %s\n' "$pinned" "${name}.tar.gz" | sha256sum -c -; \
         else \
-            curl -fsSLO "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/SHA256SUMS"; \
+            wget -q "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/SHA256SUMS"; \
             grep " ${name}.tar.gz\$" SHA256SUMS | sha256sum -c -; \
         fi; \
         tar xzf "${name}.tar.gz" --strip-components=1; \
@@ -94,7 +97,7 @@ RUN set -eux; \
         apk add --no-cache libevent; \
         apk add --no-cache --virtual .ocproxy-build-deps build-base autoconf automake libtool linux-headers libevent-dev; \
         mkdir /tmp/ocproxy-src; \
-        curl -fsSL "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/ocproxy-${OCPROXY_VERSION}-source.tar.gz" \
+        wget -q -O - "${OCPROXY_REPO}/releases/download/${OCPROXY_VERSION}/ocproxy-${OCPROXY_VERSION}-source.tar.gz" \
             | tar xz -C /tmp/ocproxy-src --strip-components=1; \
         cd /tmp/ocproxy-src; \
         [ -x configure ] || sh autogen.sh; \

@@ -73,7 +73,7 @@ Any HTTP status shows that HTTPS is reachable; it does not prove authorization. 
 | `VPN_RECONNECT_TIMEOUT` | `600` s of OpenConnect retry after transport failure (does not extend an expired session) |
 | `VPN_STARTUP_TIMEOUT` | `90` s |
 | `VPN_EXPIRY_WARNING_SECONDS` | `900` s |
-| `VPN_HEALTH_URL` | Optional HTTPS startup reachability probe through the SOCKS proxy |
+| `VPN_HEALTH_URL` | Optional HTTPS startup reachability probe through the SOCKS proxy; needs an image built with `--build-arg INSTALL_CURL=1` (curl is not installed by default to keep the image small) |
 | `VPN_PROXY_PORT` | `9876` inside the container |
 
 ### Troubleshooting
