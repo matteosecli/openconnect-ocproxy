@@ -20,10 +20,7 @@ ARG OCPROXY_SHA256_AMD64=37a6233a175a403575c01c8fd17dbf5c2a5e4707193fcc370e0291d
 ARG OCPROXY_SHA256_ARM64=d079641bd1ffb1aea0da4806238d87a00e22d2c05236aeb8053e628ca746f62b
 
 # Only bash is added on top of the base image (busybox provides timeout/flock/setsid/date/mktemp/mkfifo).
-# curl is needed only for the optional VPN_HEALTH_URL startup probe: build with --build-arg INSTALL_CURL=1.
-ARG INSTALL_CURL=0
 RUN apk add --no-cache bash && \
-    if [ "$INSTALL_CURL" = 1 ]; then apk add --no-cache curl; fi && \
     addgroup -S -g "$UID" "$USER" && \
     adduser -S -D -H -u "$UID" -G "$USER" "$USER" && \
     mkdir -p /run/vpn /usr/local/libexec && \

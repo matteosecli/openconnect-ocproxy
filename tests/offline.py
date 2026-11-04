@@ -40,12 +40,32 @@ while time.time()<deadline:time.sleep(.1)
 p.terminate();p.wait();sys.exit(2)
 '''
 fake_proxy=r'''#!/usr/bin/env python3
-import socket,sys,signal,time
+import socket,sys,signal,os,threading,time
 p=int(sys.argv[sys.argv.index('-D')+1]);s=socket.socket()
 s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
 s.bind(('127.0.0.1',p));s.listen()
 signal.signal(signal.SIGTERM,lambda *x:sys.exit(0))
-while True:time.sleep(.1)
+def recvn(c,n):
+    d=b''
+    while len(d)<n:
+        x=c.recv(n-len(d))
+        if not x:raise EOFError
+        d+=x
+    return d
+def serve(c):
+    try:
+        c.settimeout(5)
+        hdr=recvn(c,2);recvn(c,hdr[1])
+        c.sendall(b'\x05\x00')
+        h=recvn(c,4);assert h[3]==3
+        n=recvn(c,1)[0];host=recvn(c,n);port=int.from_bytes(recvn(c,2),'big')
+        with open(os.environ['MOCK_SOCKS_LOG'],'a') as f:f.write('%s:%d\\n'%(host.decode(),port))
+        fail=os.path.exists(os.environ['MOCK_SOCKS_FAIL'])
+        c.sendall(b'\x05'+(b'\x04' if fail else b'\x00')+b'\x00\x01\x00\x00\x00\x00\x00\x00')
+    except Exception:pass
+    finally:c.close()
+while True:
+    c,_=s.accept();threading.Thread(target=serve,args=(c,),daemon=True).start()
 '''
 
 def wait_for(check,seconds=12):
@@ -154,13 +174,56 @@ with tempfile.TemporaryDirectory(prefix='vpn-handoff-test-') as work:
                 for f in d.iterdir():f.unlink()
                 d.rmdir()
     results.append('PASS stale request directories are cleaned at startup and an active login lock protects them')
+    # Periodic health probe: RECONNECTING on failures, recovery, and AUTH_REQUIRED once the path stays down.
+    fail=root/'socks-fail';socks_log=root/'socks.log'
+    penv=env.copy()
+    penv.update(VPN_HEALTH_URL='https://internal.example.invalid:8443/',VPN_HEALTH_INTERVAL='1',VPN_HEALTH_FAILURES='2',
+                VPN_HEALTH_FAIL_SECONDS='8',MOCK_SESSION_SECONDS='120',MOCK_SOCKS_FAIL=str(fail),MOCK_SOCKS_LOG=str(socks_log))
+    for k in ('AUTH_MODE','OPENCONNECT_PASSWORD','OPENCONNECT_MFA_CODE'):penv.pop(k,None)
+    penv['AUTH_MODE']='terminal'
+    plog=root/'probe.log'
+    with plog.open('w') as output:
+        service=subprocess.Popen(['bash',str(bindir/'vpn-service')],env=penv,stdout=output,stderr=subprocess.STDOUT)
+        try:
+            wait_for(lambda:(runtime/'control').exists())
+            code,text=login(penv);assert code==0,text
+            wait_for(lambda:'state=CONNECTED' in (runtime/'status').read_text())
+            assert 'internal.example.invalid:8443' in socks_log.read_text()
+            fail.touch()
+            wait_for(lambda:'state=RECONNECTING' in (runtime/'status').read_text())
+            assert subprocess.call(['bash',str(bindir/'vpn-status'),'--health'],env=penv)!=0
+            fail.unlink()
+            wait_for(lambda:'state=CONNECTED' in (runtime/'status').read_text())
+            fail.touch()
+            wait_for(lambda:'state=AUTH_REQUIRED' in (runtime/'status').read_text(),seconds=30)
+            assert 'reason=health-check-failed' in (runtime/'status').read_text()
+            assert service.poll() is None and 'vpn-login to authenticate again' in plog.read_text()
+            fail.unlink()
+            code,text=login(penv);assert code==0,text
+            wait_for(lambda:'state=CONNECTED' in (runtime/'status').read_text())
+            results.append('PASS periodic SOCKS health probe: RECONNECTING, recovery, AUTH_REQUIRED after sustained failure, and re-login restores the service')
+        finally:
+            service.terminate()
+            try:service.wait(timeout=10)
+            except subprocess.TimeoutExpired:service.kill();service.wait()
+    for bad in ('http://x.example','https://user@x.example/','https://x.example/?token=1','https://x.example:99999/'):
+        r=subprocess.run(['bash','-c','source "$VPN_LIBEXEC/vpn-common"; config_args'],env={**env,'VPN_HEALTH_URL':bad},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        assert r.returncode!=0,bad
+    results.append('PASS unsafe VPN_HEALTH_URL values are rejected')
     # Compatibility mode: no terminal, one attempt, warning, no real credentials.
     env.update(AUTH_MODE='env',OPENCONNECT_USER='offline-user',OPENCONNECT_PASSWORD='offline-password',
                OPENCONNECT_MFA_CODE='offline-code',VPN_LOGIN_BIN=str(bindir/'vpn-login'),MOCK_SESSION_SECONDS='30')
+    def lock_free():
+        with open(runtime/'service.lock','a') as handle:
+            try:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB);return True
+            except OSError:return False
+    wait_for(lock_free)
+    (runtime/'status').unlink(missing_ok=True)
     with log.open('w') as output:
         service=subprocess.Popen(['bash',str(bindir/'vpn-service')],env=env,stdout=output,stderr=subprocess.STDOUT)
         try:
-            wait_for(lambda:'state=CONNECTED' in (runtime/'status').read_text())
+            try: wait_for(lambda:(runtime/'status').exists() and 'state=CONNECTED' in (runtime/'status').read_text())
+            except AssertionError: print('LOG>>',log.read_text(),(runtime/'status').read_text() if (runtime/'status').exists() else 'nostatus'); raise
             assert 'COMPATIBILITY MODE' in log.read_text()
             assert 'offline-password' not in log.read_text()
             results.append('PASS environment compatibility starts without a TTY and prints a warning without printing supplied secrets')

@@ -73,7 +73,10 @@ Any HTTP status shows that HTTPS is reachable; it does not prove authorization. 
 | `VPN_RECONNECT_TIMEOUT` | `600` s of OpenConnect retry after transport failure (does not extend an expired session) |
 | `VPN_STARTUP_TIMEOUT` | `90` s |
 | `VPN_EXPIRY_WARNING_SECONDS` | `900` s |
-| `VPN_HEALTH_URL` | Optional HTTPS startup reachability probe through the SOCKS proxy; needs an image built with `--build-arg INSTALL_CURL=1` (curl is not installed by default to keep the image small) |
+| `VPN_HEALTH_URL` | Optional HTTPS URL (host[:port], default 443; no credentials/query) used for a periodic TCP-connect probe through the SOCKS proxy, needing no extra packages. Without it only process exit is detected |
+| `VPN_HEALTH_INTERVAL` | Seconds between probes (default 30) |
+| `VPN_HEALTH_FAILURES` | Consecutive failures before state becomes `RECONNECTING` (default 3) |
+| `VPN_HEALTH_FAIL_SECONDS` | If probes keep failing this long, the tunnel is stopped and state becomes `AUTH_REQUIRED` so you can run `vpn-login` again (default 120; 0 disables) |
 | `VPN_PROXY_PORT` | `9876` inside the container |
 
 ### Troubleshooting

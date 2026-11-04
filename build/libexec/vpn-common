@@ -26,13 +26,24 @@ config_args() {
         echo 'Use a VPN URL without userinfo, query strings, fragments, or spaces.' >&2; return 1;
     }
     local name value
-    for name in VPN_RECONNECT_TIMEOUT VPN_STARTUP_TIMEOUT VPN_EXPIRY_WARNING_SECONDS; do
+    for name in VPN_RECONNECT_TIMEOUT VPN_STARTUP_TIMEOUT VPN_EXPIRY_WARNING_SECONDS \
+                VPN_HEALTH_INTERVAL VPN_HEALTH_FAILURES VPN_HEALTH_FAIL_SECONDS; do
         value=${!name:-}
         [[ -z $value || $value =~ ^(0|[1-9][0-9]{0,7})$ ]] || {
             echo 'Invalid numeric VPN timeout setting.' >&2; return 1;
         }
     done
     [[ ${VPN_DISABLE_DTLS:-0} == 0 || ${VPN_DISABLE_DTLS:-0} == 1 ]] || return 1
+    health_host=''; health_port=''
+    if [[ -n ${VPN_HEALTH_URL:-} ]]; then
+        # Only host and port are used: a TCP connect through the tunnel, no request is sent.
+        local health_re='^https://([A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(:([0-9]{1,5}))?(/[^[:space:]?#@]*)?$'
+        [[ $VPN_HEALTH_URL =~ $health_re ]] || {
+            echo 'VPN_HEALTH_URL must be https://host[:port][/path] without userinfo, query or fragment.' >&2; return 1;
+        }
+        health_host=${BASH_REMATCH[1]}; health_port=${BASH_REMATCH[4]:-443}
+        (( health_port >= 1 && health_port <= 65535 )) || return 1
+    fi
     common_args=(--no-proxy "--protocol=${OPENCONNECT_PROTOCOL:-anyconnect}")
     [[ -z ${OPENCONNECT_SERVERCERT:-} ]] || common_args+=(--servercert "$OPENCONNECT_SERVERCERT")
     [[ -z ${OPENCONNECT_CAFILE:-} ]] || common_args+=(--cafile "$OPENCONNECT_CAFILE")
@@ -95,4 +106,20 @@ process_identity() {
     stat=${stat##*) }
     read -r -a fields <<< "$stat"
     printf '%s %s\n' "$pid" "${fields[19]}"
+}
+
+# One SOCKS5 CONNECT (remote DNS) through the local proxy to host:port. Success proves the
+# tunnel carried the connection to that destination; nothing else is sent. Bounded by timeout.
+socks_probe() {
+    local host=$1 port=$2 proxy_port=${VPN_PROXY_PORT:-9876}
+    timeout "${3:-5}" bash -c '
+        host=$1; port=$2
+        exec 5<>"/dev/tcp/127.0.0.1/$3" || exit 1
+        printf "\x05\x01\x00" >&5
+        [[ $(head -c 2 <&5 | od -An -tx1 | tr -d " \n") == 0500 ]] || exit 1
+        printf "\x05\x01\x00\x03" >&5
+        printf "$(printf "\\x%02x" "${#host}")%s" "$host" >&5
+        printf "$(printf "\\x%02x\\x%02x" $((port >> 8)) $((port & 255)))" >&5
+        [[ $(head -c 2 <&5 | od -An -tx1 | tr -d " \n") == 0500 ]]
+    ' probe "$host" "$port" "$proxy_port" 2>/dev/null
 }
