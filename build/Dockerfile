@@ -37,9 +37,10 @@ RUN set -eux; \
         echo "Installed openconnect ${OPENCONNECT_VERSION} from Alpine edge packages"; \
     else \
         echo "openconnect ${OPENCONNECT_VERSION} not in Alpine packages, building from source"; \
-        apk add --no-cache libssl3 libcrypto3 libxml2 zlib lz4-libs; \
+        apk add --no-cache libssl3 libcrypto3 libxml2 zlib lz4-libs krb5-libs pcsc-lite-libs libproxy oath-toolkit-libpskc stoken; \
         apk add --no-cache --virtual .oc-build-deps \
-            build-base pkgconf linux-headers openssl-dev libxml2-dev zlib-dev lz4-dev; \
+            build-base pkgconf linux-headers openssl-dev libxml2-dev zlib-dev lz4-dev \
+            krb5-dev pcsc-lite-dev libproxy-dev oath-toolkit-dev stoken-dev; \
         mkdir /tmp/openconnect-src; \
         if wget -q -O /tmp/openconnect.tar.gz "${OPENCONNECT_TARBALL_URL}" \
             && echo "${OPENCONNECT_SHA256}  /tmp/openconnect.tar.gz" | sha256sum -c -; then \
@@ -52,7 +53,7 @@ RUN set -eux; \
             (cd /tmp/openconnect-src && sh autogen.sh); \
         fi; \
         cd /tmp/openconnect-src; \
-        ./configure --prefix=/usr/local --disable-nls --with-openssl --without-gnutls --without-libproxy --without-libpskc \
+        ./configure --prefix=/usr/local --disable-nls --with-openssl --without-gnutls \
             --with-vpnc-script=/usr/local/libexec/vpnc-script-unused; \
         make -j"$(nproc)"; \
         make install-strip; \
