@@ -30,7 +30,7 @@ docker run \
 --name "openconnect-ocproxy" \
 -p <local_port>:9876 \
 --restart always \
-barpaw/openconnect-ocproxy:latest
+ghcr.io/matteosecli/openconnect-ocproxy:latest
 ```
 - Replace ``ip:port``, ``user``, ``password``, ``mfa_code``, ``<vpn_protocol>``, and ``<local_port>`` with the appropriate values for your setup.
 - **Note:** Your connection may require additional options in ``OPENCONNECT_OPTIONS``. Check the [OpenConnect manual](https://www.infradead.org/openconnect/manual.html) for more flags.
@@ -72,15 +72,15 @@ OpenConnect supports the following VPN protocols:
 - Fortinet Fortigate SSL VPN ``--protocol=fortinet``
 
 For more details on these protocols and additional options, please refer to the OpenConnect [manual](https://www.infradead.org/openconnect/manual.html).
-## Docker Hub
+## Container Registry
 
-You can find the Docker image for **openconnect-ocproxy** on Docker Hub. Pull the image using the following command:
+You can find the Docker image for **openconnect-ocproxy** on the GitHub Container Registry. Pull the image using the following command:
 
 ```bash
-docker pull barpaw/openconnect-ocproxy:latest
+docker pull ghcr.io/matteosecli/openconnect-ocproxy:latest
 ```
 
-For more details, visit the [Docker Hub repository](https://hub.docker.com/r/barpaw/openconnect-ocproxy).
+The image is published on the [GitHub Container Registry](https://github.com/matteosecli/openconnect-ocproxy/pkgs/container/openconnect-ocproxy) as a multi-arch (amd64/arm64) image. Besides `latest` and the image version (e.g. `2.0.0`), it is tagged with its components, e.g. `openconnect-9.21`, `ocproxy-2.0.0-rc.2`, `alpine-3.24.3`.
 
 ## License
 

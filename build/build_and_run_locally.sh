@@ -51,7 +51,7 @@ fi
 echo "All required environment variables are set."
 
 # Define the base image name to avoid repetition
-IMAGE_NAME="barpaw/openconnect-ocproxy"
+IMAGE_NAME="ghcr.io/matteosecli/openconnect-ocproxy"
 
 echo "[x] Removing old \"${DOCKER_CONTAINER_NAME}\" container..."
 

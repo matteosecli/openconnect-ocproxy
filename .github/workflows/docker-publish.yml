@@ -1,0 +1,121 @@
+name: Docker
+
+# Publishing is manual only (workflow_dispatch) until the release is ready.
+# Pull requests only build the images, without pushing.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ "main" ]
+    paths: [ "build/**", ".github/workflows/docker-publish.yml" ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  versions:
+    name: Read component versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.v.outputs.image }}
+      alpine: ${{ steps.v.outputs.alpine }}
+      openconnect: ${{ steps.v.outputs.openconnect }}
+      ocproxy: ${{ steps.v.outputs.ocproxy }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse versions from build files
+        id: v
+        run: |
+          set -eu
+          image=$(sed -n "s/^DOCKER_IMAGE_VERSION='\(.*\)'/\1/p" build/.env_build)
+          alpine=$(sed -n 's/^FROM alpine:\(.*\)/\1/p' build/Dockerfile)
+          openconnect=$(sed -n 's/^ARG OPENCONNECT_VERSION=//p' build/Dockerfile)
+          ocproxy=$(sed -n 's/^ARG OCPROXY_VERSION=v\?//p' build/Dockerfile)
+          for x in "$image" "$alpine" "$openconnect" "$ocproxy"; do [ -n "$x" ] || { echo "version parsing failed"; exit 1; }; done
+          { echo "image=$image"; echo "alpine=$alpine"; echo "openconnect=$openconnect"; echo "ocproxy=$ocproxy"; } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.docker_platform }}
+    needs: versions
+    strategy:
+      matrix:
+        include:
+          - platform: amd64
+            runner: ubuntu-24.04
+            docker_platform: linux/amd64
+          - platform: arm64
+            runner: ubuntu-24.04-arm
+            docker_platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log into ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Per-arch images only get a temporary, commit-specific tag; the public tags live on the multi-arch manifest.
+      - name: Build and push single-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: build
+          platforms: ${{ matrix.docker_platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.platform }}
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,scope=${{ matrix.platform }},mode=max
+
+  merge:
+    name: Publish multi-arch manifest
+    needs: [versions, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log into ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ needs.versions.outputs.image }}
+            type=raw,value=openconnect-${{ needs.versions.outputs.openconnect }}
+            type=raw,value=ocproxy-${{ needs.versions.outputs.ocproxy }}
+            type=raw,value=alpine-${{ needs.versions.outputs.alpine }}
+
+      - name: Create and push multi-arch manifests
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          while read -r TAG; do
+            [ -z "$TAG" ] && continue
+            docker buildx imagetools create -t "$TAG" \
+              "${IMAGE}:${GITHUB_SHA}-amd64" \
+              "${IMAGE}:${GITHUB_SHA}-arm64"
+          done <<< "$TAGS"
