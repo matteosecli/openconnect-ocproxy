@@ -14,10 +14,10 @@ ARG ALPINE_EDGE_COMMUNITY=https://dl-cdn.alpinelinux.org/alpine/edge/community
 
 # ocproxy, with the leading "v": musl release binary, else source build.
 # Pinned checksums are used when set for the target architecture, otherwise the release's SHA256SUMS.
-ARG OCPROXY_VERSION=v2.0.0-rc.2
+ARG OCPROXY_VERSION=v2.0.0
 ARG OCPROXY_REPO=https://github.com/matteosecli/ocproxy
-ARG OCPROXY_SHA256_AMD64=37a6233a175a403575c01c8fd17dbf5c2a5e4707193fcc370e0291dce775cc66
-ARG OCPROXY_SHA256_ARM64=d079641bd1ffb1aea0da4806238d87a00e22d2c05236aeb8053e628ca746f62b
+ARG OCPROXY_SHA256_AMD64=1cf6b9c9820fdcfdda92380d0d7dc3798cd249de6e1a29bd8c76292c6d8c74d0
+ARG OCPROXY_SHA256_ARM64=bfd3eac5006684f58231ffd2c55b0eee9ccc52bd6796d5b4b22c577920efb658
 
 # Only bash is added on top of the base image (busybox provides timeout/flock/setsid/date/mktemp/mkfifo).
 RUN apk add --no-cache bash && \

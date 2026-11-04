@@ -8,7 +8,7 @@ This project aims to facilitate the setup of a secure VPN connection within a Do
 ## Components Used
 
 - [openconnect](https://gitlab.com/openconnect/openconnect) (v9.21; Alpine stable/edge package if available, otherwise built from the infradead release tarball or GitLab source tag)
-- [ocproxy](https://github.com/matteosecli/ocproxy) fork (v2.0.0-rc.2; musl release binary if available, otherwise built from source)
+- [ocproxy](https://github.com/matteosecli/ocproxy) fork (v2.0.0; musl release binary if available, otherwise built from source)
 ## Getting Started
 
 The container is a long-running service. It starts **without any credentials**, waits for you to authenticate from a terminal, and keeps running when the VPN session expires so you can simply log in again. No password or one-time code is put into Docker configuration by default.
@@ -115,7 +115,7 @@ You can find the Docker image for **openconnect-ocproxy** on the GitHub Containe
 docker pull ghcr.io/matteosecli/openconnect-ocproxy:latest
 ```
 
-The image is published on the [GitHub Container Registry](https://github.com/matteosecli/openconnect-ocproxy/pkgs/container/openconnect-ocproxy) as a multi-arch (amd64/arm64) image. Besides `latest` and the image version (e.g. `2.0.0`), it is tagged with its components, e.g. `openconnect-9.21`, `ocproxy-2.0.0-rc.2`, `alpine-3.24.3`.
+The image is published on the [GitHub Container Registry](https://github.com/matteosecli/openconnect-ocproxy/pkgs/container/openconnect-ocproxy) as a multi-arch (amd64/arm64) image. Besides `latest` and the image version (e.g. `2.0.0`), it is tagged with its components, e.g. `openconnect-9.21`, `ocproxy-2.0.0`, `alpine-3.24.3`.
 
 ## License
 
