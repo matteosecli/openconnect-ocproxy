@@ -7,8 +7,8 @@ This project aims to facilitate the setup of a secure VPN connection within a Do
 
 ## Components Used
 
-- [openconnect](https://gitlab.com/openconnect/openconnect) (v9.12)
-- [ocproxy](https://github.com/cernekee/ocproxy) (v1.60)
+- [openconnect](https://gitlab.com/openconnect/openconnect) (v9.21; Alpine stable/edge package if available, otherwise built from the infradead release tarball or GitLab source tag)
+- [ocproxy](https://github.com/matteosecli/ocproxy) fork (v2.0.0-rc.2; musl release binary if available, otherwise built from source)
 ## Getting Started
 
 To set up **openconnect-ocproxy**, configure environment variables according to whether you're running the Docker container directly or building and running locally.
@@ -48,7 +48,7 @@ OPENCONNECT_PASSWORD='password'
 OPENCONNECT_MFA_CODE='mfa_code (optional)'
 OPENCONNECT_OPTIONS='--protocol=<protocol, e.g., f5> --example_option=example'
 DOCKER_CONTAINER_NAME='f5_vpn'
-DOCKER_OPENCONNECT_PROXY_VERSION='1.0.1'
+DOCKER_IMAGE_VERSION='2.0.0'
 DOCKER_SOCKS5_PROXY_PORT=1337
 ```
 
