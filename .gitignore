@@ -887,3 +887,6 @@ FodyWeavers.xsd
 
 # End of https://mrkandreev.name/snippets/gitignore-generator/#vs,Linux,macOS,Windows,JetBrains,VisualStudio,code
 
+
+# VPN service configuration (nonsecret, but local)
+build/.env

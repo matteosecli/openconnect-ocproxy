@@ -1,0 +1,35 @@
+services:
+  vpn:
+    build:
+      context: .
+    image: ghcr.io/matteosecli/openconnect-ocproxy:local
+    container_name: openconnect-ocproxy
+    init: true
+    user: "12345:12345"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      # Host loopback only; the listener inside the container accepts bridge traffic.
+      - "127.0.0.1:${VPN_HOST_PORT:-1080}:9876/tcp"
+    tmpfs:
+      - /run/vpn:rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=12345,gid=12345
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777
+    environment:
+      AUTH_MODE: ${AUTH_MODE:-terminal}
+      OPENCONNECT_URL: ${OPENCONNECT_URL:?Set OPENCONNECT_URL in build/.env (nonsecret HTTPS URL)}
+      OPENCONNECT_PROTOCOL: ${OPENCONNECT_PROTOCOL:-anyconnect}
+      OPENCONNECT_ARGS_FILE: /etc/vpn/arguments.txt
+      VPN_RECONNECT_TIMEOUT: "600"
+      VPN_STARTUP_TIMEOUT: "90"
+      VPN_EXPIRY_WARNING_SECONDS: "900"
+      VPN_DISABLE_DTLS: "0"
+    volumes:
+      - ./arguments.example.txt:/etc/vpn/arguments.txt:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/vpn-status", "--health"]
+      interval: 30s
+      timeout: 5s
+      retries: 2

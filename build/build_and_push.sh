@@ -46,44 +46,30 @@ if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
 fi
 
 # Define the base image name to avoid repetition
-IMAGE_NAME="barpaw/openconnect-ocproxy"
+IMAGE_NAME="ghcr.io/matteosecli/openconnect-ocproxy"
+
+# Component versions, used as additional tags
+ALPINE_VERSION=$(sed -n 's/^FROM alpine:\(.*\)/\1/p' Dockerfile)
+OPENCONNECT_VERSION=$(sed -n 's/^ARG OPENCONNECT_VERSION=//p' Dockerfile)
+OCPROXY_VERSION=$(sed -n 's/^ARG OCPROXY_VERSION=v\?//p' Dockerfile)
+TAGS="latest ${DOCKER_IMAGE_VERSION} openconnect-${OPENCONNECT_VERSION} ocproxy-${OCPROXY_VERSION} alpine-${ALPINE_VERSION}"
 
 echo "[x] Building images..."
 
-# Build for arm64 platform
-echo "[x] Build image for arm64 platform..."
-docker build -t ${IMAGE_NAME}-arm64:${DOCKER_IMAGE_VERSION} -t ${IMAGE_NAME}-arm64:latest --no-cache --platform linux/arm64/v8 .
-# Build for amd64 platform
-echo "[x] Build image for amd64 platform..."
-docker build -t ${IMAGE_NAME}-amd64:${DOCKER_IMAGE_VERSION} -t ${IMAGE_NAME}-amd64:latest --no-cache --platform linux/amd64 .
-echo "[x] Pushing images..."
+# One image name for all architectures: per-arch images carry temporary arch tags, public tags point to the multi-arch manifest
+for ARCH in arm64 amd64; do
+    PLATFORM="linux/${ARCH}"
+    [ "$ARCH" = "arm64" ] && PLATFORM="linux/arm64/v8"
+    echo "[x] Build and push image for ${PLATFORM}..."
+    docker build -t ${IMAGE_NAME}:${DOCKER_IMAGE_VERSION}-${ARCH} --no-cache --platform ${PLATFORM} .
+    docker push ${IMAGE_NAME}:${DOCKER_IMAGE_VERSION}-${ARCH}
+done
 
-# Push arm64 image
-echo "[x] Pushing ${IMAGE_NAME}-arm64:${DOCKER_IMAGE_VERSION} image..."
-docker push ${IMAGE_NAME}-arm64:${DOCKER_IMAGE_VERSION}
-docker push ${IMAGE_NAME}-arm64:latest
-
-# Push amd64 image
-echo "[x] Pushing ${IMAGE_NAME}-amd64:${DOCKER_IMAGE_VERSION} image..."
-docker push ${IMAGE_NAME}-amd64:${DOCKER_IMAGE_VERSION}
-docker push ${IMAGE_NAME}-amd64:latest
-
-echo "[x] Creating docker manifest..."
-
-# Create the manifest
-docker manifest create ${IMAGE_NAME}:${DOCKER_IMAGE_VERSION} \
-    ${IMAGE_NAME}-arm64:${DOCKER_IMAGE_VERSION} \
-    ${IMAGE_NAME}-amd64:${DOCKER_IMAGE_VERSION} --amend
-
-# Create the manifest for latest
-docker manifest create ${IMAGE_NAME}:latest \
-    ${IMAGE_NAME}-arm64:latest \
-    ${IMAGE_NAME}-amd64:latest --amend
-
-echo "[x] Pushing docker manifest..."
-
-# Push the manifest
-docker manifest push ${IMAGE_NAME}:${DOCKER_IMAGE_VERSION} 
-docker manifest push ${IMAGE_NAME}:latest
+echo "[x] Creating and pushing multi-arch manifests..."
+for TAG in ${TAGS}; do
+    docker buildx imagetools create -t ${IMAGE_NAME}:${TAG} \
+        ${IMAGE_NAME}:${DOCKER_IMAGE_VERSION}-arm64 \
+        ${IMAGE_NAME}:${DOCKER_IMAGE_VERSION}-amd64
+done
 
 echo "[x] Done! Script finished successfully at $(date)"

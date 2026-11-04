@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set +x
+source "${VPN_LIBEXEC:-/usr/local/libexec}/vpn-common"
+runtime_check
+port=${VPN_PROXY_PORT:-9876}
+[[ $port =~ ^[0-9]+$ ]] && (( port > 0 && port <= 65535 )) || exit 2
+tmp=$(mktemp "$VPN_RUNTIME/.proxy.XXXXXXXX")
+process_identity "$$" > "$tmp"
+mv -f -- "$tmp" "$VPN_RUNTIME/proxy.identity"
+# Container-side interfaces must accept Docker bridge traffic. The host mapping
+# in Compose is explicitly 127.0.0.1. This listener has no user authentication.
+exec "${OCPROXY_BIN:-/usr/local/bin/ocproxy}" -g -k 60 -D "$port"
