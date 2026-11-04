@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set +x
+source "${VPN_LIBEXEC:-/usr/local/libexec}/vpn-common"
+runtime_check
+config_args
+[[ $VPN_LIBEXEC =~ ^/[A-Za-z0-9_./-]+$ ]] || exit 2
+for program in timeout flock setsid date; do command -v "$program" >/dev/null; done
+for program in od head tr; do command -v "$program" >/dev/null; done
+exec 8> "$VPN_RUNTIME/service.lock"
+flock -n 8 || { echo 'Supervisor already running.' >&2; exit 1; }
+
+# Remove request directories abandoned by a killed login helper, but never while a login is active.
+cleanup_stale_requests() {
+    local dir
+    exec 7> "$VPN_RUNTIME/login.lock"
+    if flock -n 7; then
+        for dir in "$VPN_RUNTIME"/req.*; do
+            [[ $dir =~ /req\.[A-Za-z0-9]{8}$ && -d $dir && ! -L $dir && -O $dir ]] || continue
+            rm -f -- "$dir/payload" "$dir/ack"
+            rmdir -- "$dir" 2>/dev/null || true
+        done
+    fi
+    exec 7>&-
+}
+cleanup_stale_requests
+rm -f -- "$VPN_RUNTIME/control" "$VPN_RUNTIME/proxy.identity"
+mkfifo -m 600 "$VPN_RUNTIME/control"
+exec 3<> "$VPN_RUNTIME/control"
+tunnel_pid=''; tunnel_identity=''; expires_epoch=''; warned=0; state=AUTH_REQUIRED
+failures=0; failing_since=''; next_probe=0
+write_state "$state" login-required
+
+stop_tunnel() {
+    local identity pid start current
+    if [[ -n $tunnel_pid ]]; then
+        current=$(process_identity "$tunnel_pid" 2>/dev/null || true)
+        if [[ -n $current && $current == "$tunnel_identity" ]]; then
+            kill -INT "$tunnel_pid" 2>/dev/null || true
+            for _ in {1..40}; do kill -0 "$tunnel_pid" 2>/dev/null || break; sleep .1; done
+            kill -TERM "$tunnel_pid" 2>/dev/null || true
+            sleep .1
+            if kill -0 "$tunnel_pid" 2>/dev/null; then kill -KILL "$tunnel_pid" 2>/dev/null || true; fi
+        fi
+        wait "$tunnel_pid" 2>/dev/null || true
+    fi
+    if [[ -r $VPN_RUNTIME/proxy.identity ]]; then
+        identity=$(< "$VPN_RUNTIME/proxy.identity")
+        read -r pid start <<< "$identity"
+        current=$(process_identity "${pid:-}" 2>/dev/null || true)
+        if [[ -n $current && $current == "$identity" ]]; then
+            kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+            for _ in {1..20}; do
+                current=$(process_identity "$pid" 2>/dev/null || true)
+                [[ $current == "$identity" ]] || break
+                sleep .1
+            done
+            current=$(process_identity "$pid" 2>/dev/null || true)
+            if [[ $current == "$identity" ]]; then
+                kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+            fi
+        fi
+    fi
+    rm -f -- "$VPN_RUNTIME/proxy.identity"
+    tunnel_pid=''; tunnel_identity=''; expires_epoch=''
+}
+
+finish() {
+    trap - EXIT
+    stop_tunnel
+    write_state STOPPED service-stopped
+    rm -f -- "$VPN_RUNTIME/control"
+}
+trap finish EXIT
+trap 'exit 0' INT TERM
+
+start_session() {
+    local request=$1 auth certificate resolve url
+    local -a tunnel_args
+    export -n auth
+    [[ $request =~ ^req\.[A-Za-z0-9]{8}$ ]] || return 1
+    request="$VPN_RUNTIME/$request"
+    [[ -d $request && ! -L $request && -O $request ]] || return 1
+    [[ -p $request/payload && ! -L $request/payload && -p $request/ack && ! -L $request/ack ]] || return 1
+    # Timeout covers opening the FIFO as well as reading it. Limit all input.
+    auth=$(timeout 15 head -c 16385 -- "$request/payload") || return 1
+    parse_session "$auth" || {
+        unset auth COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE; return 1;
+    }
+    unset auth
+    # Authentication has succeeded before we interrupt an existing tunnel.
+    stop_tunnel
+    : > "$VPN_RUNTIME/tunnel.log"
+    tunnel_args=("${common_args[@]}" --timestamp --non-inter --cookie-on-stdin
+        --reconnect-timeout="${VPN_RECONNECT_TIMEOUT:-600}"
+        --servercert "$FINGERPRINT" --script-tun --script "exec $VPN_LIBEXEC/vpn-proxy")
+    [[ -z $RESOLVE ]] || tunnel_args+=(--resolve "$RESOLVE")
+    [[ ${VPN_DISABLE_DTLS:-0} == 0 ]] || tunnel_args+=(--no-dtls)
+    printf '%s\n' "$COOKIE" | setsid "$OPENCONNECT_BIN" "${tunnel_args[@]}" "$CONNECT_URL" \
+        3>&- 8>&- >> "$VPN_RUNTIME/tunnel.log" 2>&1 &
+    tunnel_pid=$!
+    tunnel_identity=$(process_identity "$tunnel_pid")
+    unset COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE tunnel_args
+    started=$SECONDS; expires_epoch=''; warned=0; state=STARTING
+    write_state "$state" session-accepted
+    printf 'ACCEPTED\n' | timeout 5 sh -c 'cat > "$1"' sh "$request/ack" || true
+}
+
+# Environment compatibility runs once at startup; the supervisor drops its copy.
+if [[ ${AUTH_MODE:-terminal} == env ]]; then
+    "${VPN_LOGIN_BIN:-/usr/local/bin/vpn-login}" --environment &
+elif [[ ${AUTH_MODE:-terminal} != terminal ]]; then
+    echo 'AUTH_MODE must be terminal or env.' >&2; exit 2
+fi
+unset OPENCONNECT_PASSWORD OPENCONNECT_MFA_CODE COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE
+echo 'VPN service ready. Authenticate with: docker exec -it <container> vpn-login'
+while :; do
+    if IFS= read -r -t 1 -u 3 request; then
+        if ! start_session "$request"; then echo 'Login handoff failed; retry vpn-login.' >&2; fi
+    fi
+    [[ -n $tunnel_pid ]] || continue
+    if ! kill -0 "$tunnel_pid" 2>/dev/null; then
+        result=0; wait "$tunnel_pid" || result=$?
+        stop_tunnel
+        state=AUTH_REQUIRED
+        write_state "$state" "tunnel-exited-$result"
+        echo 'VPN stopped. Run docker exec -it <container> vpn-login to authenticate again.'
+        continue
+    fi
+    if [[ $state == STARTING ]]; then
+        # This is a startup marker; with a health target it must also be reachable through the tunnel.
+        if grep -q 'Configured as .*SSL connected' "$VPN_RUNTIME/tunnel.log"; then
+            if [[ -z $health_host ]] || socks_probe "$health_host" "$health_port"; then
+                state=CONNECTED; failures=0; failing_since=''
+                write_state "$state" tunnel-started
+                next_probe=$(( SECONDS + ${VPN_HEALTH_INTERVAL:-30} ))
+            fi
+        fi
+        if [[ $state == STARTING ]] && (( SECONDS - started >= ${VPN_STARTUP_TIMEOUT:-90} )); then
+            stop_tunnel; state=AUTH_REQUIRED; write_state "$state" startup-failed
+            echo 'VPN startup failed. Inspect the private tunnel log and retry login.' >&2
+        fi
+    elif [[ -n $health_host && -n $tunnel_pid ]] && (( SECONDS >= next_probe )); then
+        # Periodic path check: a session dropped by the gateway shows up here before OpenConnect gives up.
+        if socks_probe "$health_host" "$health_port"; then
+            failures=0; failing_since=''
+            if [[ $state == RECONNECTING ]]; then state=CONNECTED; write_state "$state" health-restored; fi
+        else
+            (( failures += 1 )); [[ -n $failing_since ]] || failing_since=$SECONDS
+            if [[ $state == CONNECTED ]] && (( failures >= ${VPN_HEALTH_FAILURES:-3} )); then
+                state=RECONNECTING; write_state "$state" health-check-failing
+                echo 'VPN health check failing; waiting for OpenConnect to reconnect.' >&2
+            fi
+            if [[ $state == RECONNECTING ]] && (( ${VPN_HEALTH_FAIL_SECONDS:-120} > 0 )) \
+                && (( SECONDS - failing_since >= ${VPN_HEALTH_FAIL_SECONDS:-120} )); then
+                stop_tunnel; state=AUTH_REQUIRED; write_state "$state" health-check-failed
+                echo 'VPN session appears dropped. Run docker exec -it <container> vpn-login to authenticate again.'
+                continue
+            fi
+        fi
+        next_probe=$(( SECONDS + ${VPN_HEALTH_INTERVAL:-30} ))
+    fi
+    if [[ -n $tunnel_pid && -z $expires_epoch ]]; then
+        expires_text=$(sed -n 's/.*Session authentication will expire at //p' "$VPN_RUNTIME/tunnel.log" | tail -n 1)
+        if [[ -n $expires_text ]]; then
+            # GNU date first, then busybox date with an explicit format
+            expires_epoch=$(date -u -d "$expires_text" +%s 2>/dev/null || date -u -D '%a %b %e %H:%M:%S %Y' -d "$expires_text" +%s 2>/dev/null || true)
+            write_state "$state" expiry-advertised
+        fi
+    fi
+    if [[ $expires_epoch =~ ^[0-9]+$ ]] && (( ! warned )); then
+        now=$(date -u +%s)
+        if (( expires_epoch - now <= ${VPN_EXPIRY_WARNING_SECONDS:-900} )); then
+            echo 'VPN session expires soon. Run docker exec -it <container> vpn-login to renew.'
+            warned=1
+        fi
+    fi
+done

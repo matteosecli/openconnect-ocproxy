@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set +x
+source "${VPN_LIBEXEC:-/usr/local/libexec}/vpn-common"
+unset auth COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE
+runtime_check
+config_args
+[[ -p $VPN_RUNTIME/control && ! -L $VPN_RUNTIME/control ]] || {
+    echo 'VPN supervisor is not ready.' >&2; exit 1;
+}
+exec 9> "$VPN_RUNTIME/login.lock"
+flock -n 9 || { echo 'Another login is already in progress.' >&2; exit 1; }
+mode=${1:-terminal}
+[[ $# -le 1 ]] || exit 2
+auth_args=("${common_args[@]}" --authenticate)
+[[ -z ${OPENCONNECT_USER:-} ]] || auth_args+=(--user "$OPENCONNECT_USER")
+
+if [[ $mode == --environment ]]; then
+    [[ ${AUTH_MODE:-terminal} == env ]] || exit 2
+    cat >&2 <<'WARNING'
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+WARNING: ENVIRONMENT AUTHENTICATION IS A COMPATIBILITY MODE.
+Docker configuration/inspection may retain these credentials. Unsetting
+them here does not erase that configuration. Do not commit credential
+files or share inspect output. A supplied MFA code is normally single-use.
+No automatic retry with this password/code will be performed.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+WARNING
+    password=${OPENCONNECT_PASSWORD:?Missing compatibility password}
+    code=${OPENCONNECT_MFA_CODE:-}
+    unset OPENCONNECT_PASSWORD OPENCONNECT_MFA_CODE
+    export -n password code 2>/dev/null || true
+    auth=$(printf '%s\n' "$password" "$code" | "$OPENCONNECT_BIN" \
+        "${auth_args[@]}" --passwd-on-stdin --non-inter "$OPENCONNECT_URL")
+    unset password code
+else
+    [[ $mode == terminal && -t 0 && -t 2 ]] || {
+        echo 'Run vpn-login in an interactive terminal, e.g. docker exec -it.' >&2; exit 2;
+    }
+    unset OPENCONNECT_PASSWORD OPENCONNECT_MFA_CODE
+    # stdout is captured privately; OpenConnect prompts remain on this terminal.
+    auth=$("$OPENCONNECT_BIN" "${auth_args[@]}" "$OPENCONNECT_URL")
+fi
+parse_session "$auth" || { echo 'Unsupported authentication response; no session handed off.' >&2; exit 1; }
+request=$(mktemp -d "$VPN_RUNTIME/req.XXXXXXXX")
+mkfifo -m 600 "$request/payload" "$request/ack"
+cleanup_login() {
+    unset auth COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE password code
+    rm -f -- "$request/payload" "$request/ack"
+    rmdir -- "$request" 2>/dev/null || true
+}
+trap cleanup_login EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# Only the random request name enters the control FIFO. Neither FIFO is a file log.
+printf '%s\n' "${request##*/}" | timeout 5 sh -c 'cat > "$1"' sh "$VPN_RUNTIME/control"
+printf '%s\n' "$auth" | timeout 15 sh -c 'cat > "$1"' sh "$request/payload"
+unset auth COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE
+ack=$(timeout 15 cat -- "$request/ack")
+[[ $ack == ACCEPTED ]] || { echo 'Session was not accepted by the supervisor.' >&2; exit 1; }
+echo 'Session accepted; the tunnel is starting. This terminal can close.'

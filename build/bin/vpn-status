@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set +x
+source "${VPN_LIBEXEC:-/usr/local/libexec}/vpn-common"
+runtime_check
+[[ -r $VPN_RUNTIME/status ]] || { echo 'state=INITIALIZING'; exit 1; }
+if [[ ${1:-} == --health ]]; then
+    grep -q '^state=CONNECTED$' "$VPN_RUNTIME/status"
+else
+    cat -- "$VPN_RUNTIME/status"
+fi

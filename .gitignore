@@ -890,3 +890,6 @@ FodyWeavers.xsd
 
 # VPN service configuration (nonsecret, but local)
 build/.env
+
+# Project scripts shipped in the image (otherwise matched by the [Bb]in/ rule above)
+!build/bin/
