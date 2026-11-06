@@ -1,9 +1,12 @@
+# Project name shown by Docker Desktop and "docker compose ls" (otherwise the folder name, "build").
+name: &name openconnect-ocproxy
+
 services:
   vpn:
     build:
       context: .
     image: ghcr.io/matteosecli/openconnect-ocproxy:local
-    container_name: openconnect-ocproxy
+    container_name: *name
     init: true
     user: "12345:12345"
     read_only: true
@@ -18,6 +21,8 @@ services:
       - /run/vpn:rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=12345,gid=12345
       - /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777
     environment:
+      # Only used to print the exact "docker exec" command in the logs.
+      VPN_CONTAINER_NAME: *name
       AUTH_MODE: ${AUTH_MODE:-terminal}
       OPENCONNECT_URL: ${OPENCONNECT_URL:?Set OPENCONNECT_URL in build/.env (nonsecret HTTPS URL)}
       OPENCONNECT_PROTOCOL: ${OPENCONNECT_PROTOCOL:-anyconnect}

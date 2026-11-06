@@ -112,7 +112,13 @@ elif [[ ${AUTH_MODE:-terminal} != terminal ]]; then
     echo 'AUTH_MODE must be terminal or env.' >&2; exit 2
 fi
 unset OPENCONNECT_PASSWORD OPENCONNECT_MFA_CODE COOKIE HOST CONNECT_URL FINGERPRINT RESOLVE
-echo 'VPN service ready. Authenticate with: docker exec -it <container> vpn-login'
+# Name shown in log hints: VPN_CONTAINER_NAME if set, else Docker's default hostname (the short
+# container ID, which docker exec accepts). A custom --hostname is not a container name.
+container=${VPN_CONTAINER_NAME:-}
+if [[ -z $container && ${HOSTNAME:-} =~ ^[0-9a-f]{12}$ ]]; then container=$HOSTNAME; fi
+[[ $container =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || container='<container>'
+login_cmd="docker exec -it $container vpn-login"
+echo "VPN service ready. Authenticate with: $login_cmd"
 while :; do
     if IFS= read -r -t 1 -u 3 request; then
         if ! start_session "$request"; then echo 'Login handoff failed; retry vpn-login.' >&2; fi
@@ -123,7 +129,7 @@ while :; do
         stop_tunnel
         state=AUTH_REQUIRED
         write_state "$state" "tunnel-exited-$result"
-        echo 'VPN stopped. Run docker exec -it <container> vpn-login to authenticate again.'
+        echo "VPN stopped. Run $login_cmd to authenticate again."
         continue
     fi
     if [[ $state == STARTING ]]; then
@@ -153,7 +159,7 @@ while :; do
             if [[ $state == RECONNECTING ]] && (( ${VPN_HEALTH_FAIL_SECONDS:-120} > 0 )) \
                 && (( SECONDS - failing_since >= ${VPN_HEALTH_FAIL_SECONDS:-120} )); then
                 stop_tunnel; state=AUTH_REQUIRED; write_state "$state" health-check-failed
-                echo 'VPN session appears dropped. Run docker exec -it <container> vpn-login to authenticate again.'
+                echo "VPN session appears dropped. Run $login_cmd to authenticate again."
                 continue
             fi
         fi
@@ -170,7 +176,7 @@ while :; do
     if [[ $expires_epoch =~ ^[0-9]+$ ]] && (( ! warned )); then
         now=$(date -u +%s)
         if (( expires_epoch - now <= ${VPN_EXPIRY_WARNING_SECONDS:-900} )); then
-            echo 'VPN session expires soon. Run docker exec -it <container> vpn-login to renew.'
+            echo "VPN session expires soon. Run $login_cmd to renew."
             warned=1
         fi
     fi
