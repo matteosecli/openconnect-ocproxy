@@ -3,8 +3,10 @@ FROM alpine:3.24.3
 ARG USER=vpn
 ARG UID=12345
 
-# openconnect, without the leading "v": Alpine stable package, then Alpine edge package,
-# then a source build (pinned release tarball first, GitLab tag as last resort).
+# openconnect, without the leading "v": source build first (pinned release tarball, GitLab tag as
+# last resort), then the Alpine stable package, then the Alpine edge package. The source build has
+# the same features as the Alpine package; it is smaller because the package also depends on vpnc and
+# iproute2, which only the default vpnc-script uses (this image always runs --script-tun).
 ARG OPENCONNECT_VERSION=9.21
 # SHA-256 of the signed upstream release tarball (verified against the maintainer's detached signature)
 ARG OPENCONNECT_SHA256=5b32369467db6e5f317aa1ed12cfcbb81ed00bdbc765450b6bfcbdc300944a58
@@ -26,15 +28,14 @@ RUN apk add --no-cache bash && \
     mkdir -p /run/vpn /usr/local/libexec && \
     chown "$UID:$UID" /run/vpn
 
-# openconnect: build deps are removed in the same layer
+# openconnect: build deps are removed in the same layer.
+# Each attempt runs as "set +e; (attempt); rc=$?; set -e" because errexit is ignored inside an
+# "if" condition, which would let a failed step (e.g. a checksum) go unnoticed.
 RUN set -eux; \
-    if apk add --no-cache "openconnect~=${OPENCONNECT_VERSION}"; then \
-        echo "Installed openconnect ${OPENCONNECT_VERSION} from Alpine stable packages"; \
-    elif apk add --no-cache -X "${ALPINE_EDGE_COMMUNITY}" "openconnect~=${OPENCONNECT_VERSION}"; then \
-        echo "Installed openconnect ${OPENCONNECT_VERSION} from Alpine edge packages"; \
-    else \
-        echo "openconnect ${OPENCONNECT_VERSION} not in Alpine packages, building from source"; \
-        apk add --no-cache libssl3 libcrypto3 libxml2 zlib lz4-libs krb5-libs pcsc-lite-libs libproxy oath-toolkit-libpskc stoken; \
+    build_openconnect() { \
+        set -e; \
+        apk add --no-cache --virtual .oc-runtime-deps \
+            libssl3 libcrypto3 libxml2 zlib lz4-libs krb5-libs pcsc-lite-libs libproxy oath-toolkit-libpskc stoken; \
         apk add --no-cache --virtual .oc-build-deps \
             build-base pkgconf linux-headers openssl-dev libxml2-dev zlib-dev lz4-dev \
             krb5-dev pcsc-lite-dev libproxy-dev oath-toolkit-dev stoken-dev; \
@@ -53,22 +54,47 @@ RUN set -eux; \
         ./configure --prefix=/usr/local --disable-nls --with-openssl --without-gnutls \
             --with-vpnc-script=/usr/local/libexec/vpnc-script-unused; \
         make -j"$(nproc)"; \
-        make install-strip; \
+        make install-strip DESTDIR=/tmp/openconnect-stage; \
+        cd /tmp/openconnect-stage/usr/local; \
+        rm -rf include share lib/pkgconfig lib/libopenconnect.la; \
+        cp -a . /usr/local/; \
         printf '#!/bin/sh\necho "This image requires --script-tun with its proxy helper." >&2\nexit 1\n' \
             > /usr/local/libexec/vpnc-script-unused; \
         chmod 755 /usr/local/libexec/vpnc-script-unused; \
-        cd /; \
-        rm -rf /tmp/openconnect-src /tmp/openconnect.tar.gz; \
-        apk del --no-cache .oc-build-deps; \
-        apk del --no-cache .oc-git-deps 2>/dev/null || true; \
+    }; \
+    set +e; (build_openconnect); rc=$?; set -e; \
+    cd /; \
+    rm -rf /tmp/openconnect-src /tmp/openconnect-stage /tmp/openconnect.tar.gz; \
+    apk del --no-cache .oc-build-deps 2>/dev/null || true; \
+    apk del --no-cache .oc-git-deps 2>/dev/null || true; \
+    if [ "$rc" -eq 0 ]; then \
+        echo "Built openconnect ${OPENCONNECT_VERSION} from source"; \
+    else \
+        echo "openconnect source build failed (exit $rc), trying Alpine packages"; \
+        apk del --no-cache .oc-runtime-deps 2>/dev/null || true; \
+        rm -rf /usr/local/sbin/openconnect /usr/local/lib/libopenconnect.so* \
+            /usr/local/libexec/openconnect /usr/local/libexec/vpnc-script-unused; \
+        if apk add --no-cache "openconnect~=${OPENCONNECT_VERSION}"; then \
+            echo "Installed openconnect ${OPENCONNECT_VERSION} from Alpine stable packages"; \
+        elif apk add --no-cache -X "${ALPINE_EDGE_COMMUNITY}" "openconnect~=${OPENCONNECT_VERSION}"; then \
+            echo "Installed openconnect ${OPENCONNECT_VERSION} from Alpine edge packages"; \
+        else \
+            echo "Could not install openconnect ${OPENCONNECT_VERSION} by any method" >&2; exit 1; \
+        fi; \
     fi; \
     mkdir -p /usr/local/sbin; \
     [ -x /usr/local/sbin/openconnect ] || ln -s "$(command -v openconnect)" /usr/local/sbin/openconnect; \
-    /usr/local/sbin/openconnect --version
+    version=$(/usr/local/sbin/openconnect --version); \
+    echo "$version"; \
+    case "$version" in \
+        *"version v${OPENCONNECT_VERSION}"*) ;; \
+        *) echo "Expected openconnect v${OPENCONNECT_VERSION}" >&2; exit 1 ;; \
+    esac
 
 # ocproxy: build deps are removed in the same layer
 RUN set -eux; \
     install_binary() { \
+        set -e; \
         case "$(uname -m)" in \
             x86_64) arch=amd64; pinned="${OCPROXY_SHA256_AMD64}" ;; \
             aarch64) arch=arm64; pinned="${OCPROXY_SHA256_ARM64}" ;; \
@@ -84,10 +110,11 @@ RUN set -eux; \
             grep " ${name}.tar.gz\$" SHA256SUMS | sha256sum -c -; \
         fi; \
         tar xzf "${name}.tar.gz" --strip-components=1; \
+        ./ocproxy -h >/dev/null; \
         install -m 0755 ocproxy /usr/local/bin/ocproxy; \
-        ocproxy -h >/dev/null; \
     }; \
-    if (install_binary); then \
+    set +e; (install_binary); rc=$?; set -e; \
+    if [ "$rc" -eq 0 ]; then \
         echo "Installed ocproxy ${OCPROXY_VERSION} release binary"; \
     else \
         echo "No usable ocproxy ${OCPROXY_VERSION} binary, building from source"; \
