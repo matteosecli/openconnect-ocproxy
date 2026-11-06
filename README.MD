@@ -44,7 +44,25 @@ docker logs --tail 30 openconnect-ocproxy
 
 When the helper prints `Session accepted`, you can close the terminal; the tunnel keeps running. When the gateway session expires (a reminder is logged 15 minutes before an advertised expiry), or the container restarts, run the same `vpn-login` command again. A failed or cancelled login leaves a working tunnel untouched; a successful one replaces it, which may interrupt open connections, so applications should retry. The session cookie is never persisted, so a container restart always requires a new login.
 
-`vpn-login` only needs a real terminal and works for gateways that accept terminal (non-browser) authentication. Some identity providers require browser-only SSO, which is not supported yet.
+`vpn-login` only needs a real terminal and works for gateways that accept terminal (non-browser) authentication.
+
+#### Browser SSO (SAML, e.g. Microsoft Entra)
+
+The image ships no browser. When a gateway (or group) signs in through a browser, sign in **on the host** with a tool that handles it, and pipe the resulting session into the container. Cisco AnyConnect gateways use one of two SAML modes; `openconnect --authenticate` tells you which: a username/password prompt means no SSO for that address, and `No SSO handler` means the embedded mode.
+
+- **External browser** (the gateway sends your default browser back to `http://localhost:29786/...`): plain OpenConnect handles it, e.g. from Homebrew or your distribution, using your own browser with its passwords and passkeys. On Linux use `--external-browser=/usr/bin/xdg-open` (a full path: OpenConnect does not search `PATH` for it).
+
+  ```bash
+  openconnect --authenticate --external-browser=/usr/bin/open https://vpn.example.org/sso | docker exec -i openconnect-ocproxy vpn-login --session-stdin
+  ```
+
+- **Embedded browser** (the client must read a cookie from its own browser window): use a tool that bundles one, such as [openconnect-saml](https://pypi.org/project/openconnect-saml/).
+
+  ```bash
+  openconnect-saml --server vpn.example.org/sso --auth-only | docker exec -i openconnect-ocproxy vpn-login --session-stdin
+  ```
+
+`--session-stdin` accepts OpenConnect's own `--authenticate` output or openconnect-saml's `HOST`/`COOKIE`/`FINGERPRINT` output, parses it strictly as data (never evaluated), and hands it to the running service like any other login; the cookie never enters arguments, the environment or a file.
 
 ### 3. Use the proxy
 
@@ -116,7 +134,7 @@ You can find the Docker image for **openconnect-ocproxy** on the GitHub Containe
 docker pull ghcr.io/matteosecli/openconnect-ocproxy:latest
 ```
 
-The image is published on the [GitHub Container Registry](https://github.com/matteosecli/openconnect-ocproxy/pkgs/container/openconnect-ocproxy) as a multi-arch (amd64/arm64) image. Besides `latest` and the image version (e.g. `2.1.0`), it is tagged with its components, e.g. `openconnect-9.21`, `ocproxy-2.0.0`, `alpine-3.24.3`.
+The image is published on the [GitHub Container Registry](https://github.com/matteosecli/openconnect-ocproxy/pkgs/container/openconnect-ocproxy) as a multi-arch (amd64/arm64) image. Besides `latest` and the image version (e.g. `2.2.0`), it is tagged with its components, e.g. `openconnect-9.21`, `ocproxy-2.0.0`, `alpine-3.24.3`.
 
 ## License
 

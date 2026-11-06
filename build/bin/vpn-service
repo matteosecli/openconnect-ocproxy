@@ -168,8 +168,11 @@ while :; do
     if [[ -n $tunnel_pid && -z $expires_epoch ]]; then
         expires_text=$(sed -n 's/.*Session authentication will expire at //p' "$VPN_RUNTIME/tunnel.log" | tail -n 1)
         if [[ -n $expires_text ]]; then
-            # GNU date first, then busybox date with an explicit format
-            expires_epoch=$(date -u -d "$expires_text" +%s 2>/dev/null || date -u -D '%a %b %e %H:%M:%S %Y' -d "$expires_text" +%s 2>/dev/null || true)
+            # GNU date first, then busybox date with explicit formats: OpenConnect prints either
+            # "Fri Nov 20 17:44:55 2026" or "Fri, 20 Nov 2026 17:44:55 UTC" depending on the gateway.
+            expires_epoch=$(date -u -d "$expires_text" +%s 2>/dev/null \
+                || date -u -D '%a %b %e %H:%M:%S %Y' -d "$expires_text" +%s 2>/dev/null \
+                || date -u -D '%a, %d %b %Y %H:%M:%S' -d "${expires_text% UTC}" +%s 2>/dev/null || true)
             write_state "$state" expiry-advertised
         fi
     fi
