@@ -14,6 +14,32 @@ mode=${1:-terminal}
 auth_args=("${common_args[@]}" --authenticate)
 [[ -z ${OPENCONNECT_USER:-} ]] || auth_args+=(--user "$OPENCONNECT_USER")
 
+# openconnect-saml --auth-only prints HOST (the https://host[/group] URL it connects to), COOKIE and
+# FINGERPRINT, shell-quoted. Convert to OpenConnect's five fields; values are data, never evaluated.
+normalize_saml_session() {
+    local raw=$1 line key value host='' cookie='' fingerprint='' hostname
+    local re='^https://([A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$'
+    local -A seen=()
+    (( ${#raw} > 0 && ${#raw} <= 16384 )) && [[ $raw != *$'\r'* ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -n $line ]] || continue
+        if [[ $line =~ ^(HOST|COOKIE|FINGERPRINT)=\'([^\']*)\'$ || $line =~ ^(HOST|COOKIE|FINGERPRINT)=([A-Za-z0-9@%+=:,./_-]+)$ ]]; then
+            key=${BASH_REMATCH[1]}; value=${BASH_REMATCH[2]}
+        else
+            return 1
+        fi
+        [[ ! ${seen[$key]+yes} ]] || return 1
+        seen[$key]=1
+        case $key in HOST) host=$value ;; COOKIE) cookie=$value ;; FINGERPRINT) fingerprint=$value ;; esac
+    done <<< "$raw"
+    (( ${#seen[@]} == 3 )) || return 1
+    [[ $host == https://* ]] || host="https://$host"
+    [[ $host =~ $re ]] || return 1
+    hostname=${BASH_REMATCH[1]}
+    printf "COOKIE='%s'\nHOST='%s'\nCONNECT_URL='%s'\nFINGERPRINT='%s'\nRESOLVE=\n" \
+        "$cookie" "$hostname" "$host" "$fingerprint"
+}
+
 if [[ $mode == --environment ]]; then
     [[ ${AUTH_MODE:-terminal} == env ]] || exit 2
     cat >&2 <<'WARNING'
@@ -32,6 +58,22 @@ WARNING
     auth=$(printf '%s\n' "$password" "$code" | "$OPENCONNECT_BIN" \
         "${auth_args[@]}" --passwd-on-stdin --non-inter "$OPENCONNECT_URL")
     unset password code
+elif [[ $mode == --session-stdin ]]; then
+    # A session obtained outside the container, e.g. by a host tool that handles browser SSO:
+    #   openconnect-saml --server vpn.example.org/sso --auth-only | docker exec -i <container> vpn-login --session-stdin
+    #   openconnect --authenticate --external-browser=/usr/bin/open https://vpn.example.org/sso | docker exec -i ...
+    # Accepts OpenConnect's --authenticate output or openconnect-saml's HOST/COOKIE/FINGERPRINT.
+    [[ ! -t 0 ]] || {
+        echo 'Pipe the session into vpn-login --session-stdin (docker exec -i, without -t).' >&2; exit 2;
+    }
+    unset OPENCONNECT_PASSWORD OPENCONNECT_MFA_CODE
+    auth=$(head -c 16385)
+    [[ -n $auth ]] || { echo 'No session received on stdin (did the sign-in tool finish?); nothing handed off.' >&2; exit 1; }
+    if ! parse_session "$auth"; then
+        auth=$(normalize_saml_session "$auth") || {
+            unset auth; echo 'Unsupported session format on stdin; no session handed off.' >&2; exit 1;
+        }
+    fi
 else
     [[ $mode == terminal && -t 0 && -t 2 ]] || {
         echo 'Run vpn-login in an interactive terminal, e.g. docker exec -it.' >&2; exit 2;

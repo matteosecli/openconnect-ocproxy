@@ -210,6 +210,37 @@ with tempfile.TemporaryDirectory(prefix='vpn-handoff-test-') as work:
         r=subprocess.run(['bash','-c','source "$VPN_LIBEXEC/vpn-common"; config_args'],env={**env,'VPN_HEALTH_URL':bad},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         assert r.returncode!=0,bad
     results.append('PASS unsafe VPN_HEALTH_URL values are rejected')
+    # Session handoff from a host-side tool (openconnect-saml --auth-only, or OpenConnect's own format).
+    senv={**env,'MOCK_SESSION_SECONDS':'60'}
+    slog=root/'handoff.log'
+    with slog.open('w') as output:
+        service=subprocess.Popen(['bash',str(bindir/'vpn-service')],env=senv,stdout=output,stderr=subprocess.STDOUT)
+        try:
+            wait_for(lambda:(runtime/'control').exists() and 'state=AUTH_REQUIRED' in (runtime/'status').read_text())
+            code,text=login(senv);assert code==0,text
+            wait_for(lambda:'state=CONNECTED' in (runtime/'status').read_text())
+            def handoff(text):
+                return subprocess.run(['bash',str(bindir/'vpn-login'),'--session-stdin'],input=text.encode(),env=senv,
+                                      stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            saml="HOST=https://vpn.example.invalid/sso\nCOOKIE='OFFLINE-COOKIE-NEVER-REAL'\nFINGERPRINT="+'AB12'*10+"\n"
+            for bad in [saml+"COOKIE='again'\n", saml+"EXTRA=1\n", saml.replace('https://','http://'),
+                        saml.replace("'OFFLINE-COOKIE-NEVER-REAL'","OFFLINE COOKIE"), saml.replace("FINGERPRINT=","FINGERPRINT='x'\"'\"'"),
+                        "COOKIE='$(touch "+str(root/'must-not-exist')+")'\n", '']:
+                pid=(runtime/'status').read_text().split('tunnel_pid=')[1].splitlines()[0]
+                r=handoff(bad);assert r.returncode!=0,(bad,r.stderr)
+                assert 'tunnel_pid='+pid in (runtime/'status').read_text()
+            assert not (root/'must-not-exist').exists()
+            for good in [saml, saml.replace('HOST=https://','HOST='), "COOKIE='OFFLINE-COOKIE-NEVER-REAL'\nHOST='vpn.example.invalid'\nCONNECT_URL='https://vpn.example.invalid/'\nFINGERPRINT='sha256:"+'a'*64+"'\nRESOLVE=\n"]:
+                pid=(runtime/'status').read_text().split('tunnel_pid=')[1].splitlines()[0]
+                r=handoff(good);assert r.returncode==0,r.stderr
+                assert b'OFFLINE-COOKIE-NEVER-REAL' not in r.stdout+r.stderr
+                wait_for(lambda:('tunnel_pid='+pid) not in (runtime/'status').read_text() and 'state=CONNECTED' in (runtime/'status').read_text())
+            results.append('PASS session handoff on stdin: openconnect-saml and OpenConnect formats accepted, malformed/duplicate/http/unquoted input rejected without touching the tunnel, nothing evaluated')
+        finally:
+            service.terminate()
+            try:service.wait(timeout=10)
+            except subprocess.TimeoutExpired:service.kill();service.wait()
+    assert b'OFFLINE-COOKIE-NEVER-REAL' not in slog.read_bytes()
     # Compatibility mode: no terminal, one attempt, warning, no real credentials.
     env.update(AUTH_MODE='env',OPENCONNECT_USER='offline-user',OPENCONNECT_PASSWORD='offline-password',
                OPENCONNECT_MFA_CODE='offline-code',VPN_LOGIN_BIN=str(bindir/'vpn-login'),MOCK_SESSION_SECONDS='30')
