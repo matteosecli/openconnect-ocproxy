@@ -79,8 +79,21 @@ else
         echo 'Run vpn-login in an interactive terminal, e.g. docker exec -it.' >&2; exit 2;
     }
     unset OPENCONNECT_PASSWORD OPENCONNECT_MFA_CODE
+    # Closing the terminal does not end a docker exec session: without a limit, an abandoned login
+    # would wait at its prompt forever and hold the login lock. 0 disables the limit.
+    oc_cmd=("$OPENCONNECT_BIN" "${auth_args[@]}" "$OPENCONNECT_URL")
+    if [[ ${VPN_LOGIN_TIMEOUT:-300} != 0 ]]; then
+        # GNU timeout needs --foreground to leave the prompts on the terminal; busybox has no such flag.
+        if timeout --help 2>&1 | grep -q -- --foreground; then
+            oc_cmd=(timeout --foreground "${VPN_LOGIN_TIMEOUT:-300}" "${oc_cmd[@]}")
+        else
+            oc_cmd=(timeout "${VPN_LOGIN_TIMEOUT:-300}" "${oc_cmd[@]}")
+        fi
+    fi
     # stdout is captured privately; OpenConnect prompts remain on this terminal.
-    auth=$("$OPENCONNECT_BIN" "${auth_args[@]}" "$OPENCONNECT_URL")
+    auth=$("${oc_cmd[@]}") || {
+        echo 'Login failed, was cancelled or timed out; no session handed off.' >&2; exit 1;
+    }
 fi
 parse_session "$auth" || { echo 'Unsupported authentication response; no session handed off.' >&2; exit 1; }
 request=$(mktemp -d "$VPN_RUNTIME/req.XXXXXXXX")
