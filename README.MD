@@ -64,6 +64,33 @@ The image ships no browser. When a gateway (or group) signs in through a browser
 
 `--session-stdin` accepts OpenConnect's own `--authenticate` output or openconnect-saml's `HOST`/`COOKIE`/`FINGERPRINT` output, parses it strictly as data (never evaluated), and hands it to the running service like any other login; the cookie never enters arguments, the environment or a file.
 
+#### macOS login helper (optional)
+
+`host/macos` builds a small background app, **OpenConnect Proxy Login**, with tools that ship with macOS (no Xcode, no extra installs). Every minute it asks the container for its state; when a login is needed (first start, expired or dropped session) or the session expires within 15 minutes, it shows a short notification with the reason (for example "VPN login needed – The VPN session ended. Click to log in."; it never takes focus, and repeats every 30 minutes while a login is still needed); clicking the notification runs `docker exec -it openconnect-ocproxy vpn-login` in a new window of your default terminal app (the one macOS uses for executable scripts: Terminal, or iTerm2 after *Make iTerm2 Default Term*). The window closes by itself after a successful login (and a notification confirms the connection), or after a key press when the login failed, so the error can be read first; in Terminal this relies on its default "When the shell exits: Close if the shell exited cleanly" profile setting. It stores no credentials and has no Dock icon. Clicking an out-of-date notification (the VPN already reconnected, or a login is in progress) only shows a notification saying no action is needed. Opening the app again does the same as clicking the notification when a login is due, and otherwise shows the state with a button to quit the helper. Banners disappear after a few seconds (macOS decides how long); to keep the notification on screen until you act on it, set its style to *Persistent* under System Settings → Notifications → OpenConnect Proxy Login. A Focus such as Do Not Disturb hides it unless the app is added to that Focus's allowed apps (System Settings → Focus → *Focus name* → Allowed Notifications → Apps); an app signed without a paid Apple developer certificate cannot send time-sensitive notifications that break through on their own.
+
+Download the app from the [helper releases](https://github.com/matteosecli/openconnect-ocproxy/releases) (`helpers-v*`), or build it from a checkout. A downloaded app is from an unidentified developer, so the first time you open it, macOS refuses; allow it under System Settings → Privacy & Security → *Open Anyway*.
+
+```bash
+sh host/macos/build.sh                               # creates host/macos/dist/OpenConnect Proxy Login.app
+open "host/macos/dist/OpenConnect Proxy Login.app"
+```
+
+To start it automatically, add the app under System Settings → General → Login Items. macOS asks once for permission to show notifications and, with iTerm2, to control iTerm2 (it opens the login window over AppleScript). If its notifications show the generic AppleScript icon instead of the app's, macOS cached that icon from a build made before the app had its own; logging out and back in usually refreshes it. Optional settings: `defaults write io.github.matteosecli.openconnect-ocproxy.login-helper containerName <name>` for another container, `... reminderMinutes -int 60` to change the reminder interval, and `... terminalApp iTerm` (or any app name) to choose the terminal explicitly.
+
+#### Linux login helper (optional)
+
+`host/linux` installs the same helper as a systemd user service, written in plain shell. It checks the container every minute and, when a login is needed or the session expires within 15 minutes, shows a desktop notification with the reason (repeated every 30 minutes while a login is still due). The notification stays in the notification list until you act on it. Clicking it, or its *Log In* button, runs `docker exec -it openconnect-ocproxy vpn-login` in a new terminal window. The window closes after a successful login (a "VPN connected" notification follows), or waits for a key press when the login failed. As on macOS, it stores no credentials, and clicking an out-of-date notification only says that no action is needed.
+
+Run the installer from a checkout as below, or download the Linux archive from the [helper releases](https://github.com/matteosecli/openconnect-ocproxy/releases), extract it and run `sh openconnect-ocproxy-helper-<version>-linux/linux/install.sh`.
+
+```bash
+sh host/linux/install.sh                             # installs to ~/.local, starts the service at login
+systemctl --user kill -s USR1 openconnect-ocproxy-notifier.service   # check now (opens the login if one is due)
+journalctl --user -u openconnect-ocproxy-notifier -f                 # logs
+```
+
+Rerun `install.sh` to update; `~/.local/lib/openconnect-ocproxy-notifier/vpn-notifier.sh --version` shows the installed version. It needs a systemd user session and a desktop notification server that supports actions (GNOME, KDE Plasma and most others do), plus `gdbus`, `dbus-monitor` and `stdbuf`, which ship with the usual desktop installs. Without clickable notifications it still notifies, with the login command in the text. The terminal is the `TERMINAL_APP` setting if set, else `$TERMINAL`, else the distribution's default `x-terminal-emulator` (Debian, Ubuntu), else the first installed of GNOME Terminal, Konsole, Xfce Terminal, Tilix, Alacritty, kitty and xterm. Settings live in `~/.config/openconnect-ocproxy-notifier/config` (`CONTAINER_NAME`, `REMINDER_MINUTES`, `TERMINAL_APP`); restart the service after editing it. Tested on Ubuntu 26.04 (GNOME) with Ptyxis and GNOME Terminal. To uninstall: `systemctl --user disable --now openconnect-ocproxy-notifier`, then remove `~/.local/lib/openconnect-ocproxy-notifier`, `~/.config/systemd/user/openconnect-ocproxy-notifier.service` and `~/.config/openconnect-ocproxy-notifier`.
+
 ### 3. Use the proxy
 
 Configure applications for SOCKS5 with **remote DNS**, e.g.:

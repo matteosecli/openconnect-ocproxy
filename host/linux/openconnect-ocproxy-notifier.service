@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenConnect Proxy login notifier
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/lib/openconnect-ocproxy-notifier/vpn-notifier.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
