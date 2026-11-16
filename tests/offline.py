@@ -133,6 +133,22 @@ with tempfile.TemporaryDirectory(prefix='vpn-handoff-test-') as work:
             code,text=login(bad_env);assert code!=0
             assert 'tunnel_pid='+pid1 in (runtime/'status').read_text()
             results.append('PASS failed renewal leaves existing tunnel running')
+            # A login abandoned at its prompt (e.g. terminal closed) must not hold the login lock forever.
+            import pty,fcntl
+            master,slave=pty.openpty();t0=time.time()
+            p=subprocess.Popen(['bash',str(bindir/'vpn-login')],stdin=slave,stdout=slave,stderr=slave,
+                               env={**env,'VPN_LOGIN_TIMEOUT':'2'},start_new_session=True)
+            os.close(slave);out=b''
+            while p.poll() is None and time.time()-t0<15:
+                if select.select([master],[],[],.1)[0]:
+                    try:out+=os.read(master,8192)
+                    except OSError:break
+            if p.poll() is None:p.kill();p.wait();raise AssertionError('abandoned login was not timed out')
+            os.close(master)
+            assert p.returncode!=0 and b'Fake VPN password:' in out and b'timed out' in out,out
+            assert 'tunnel_pid='+pid1 in (runtime/'status').read_text()
+            with open(runtime/'login.lock','a') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            results.append('PASS abandoned login times out (VPN_LOGIN_TIMEOUT), releases the login lock and leaves the tunnel running')
             code,text=login(env);assert code==0,text
             wait_for(lambda:('tunnel_pid='+pid1) not in (runtime/'status').read_text())
             wait_for(lambda:'state=CONNECTED' in (runtime/'status').read_text())

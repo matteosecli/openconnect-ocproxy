@@ -93,6 +93,7 @@ Any HTTP status shows that HTTPS is reachable; it does not prove authorization. 
 | `VPN_HEALTH_FAILURES` | Consecutive failures before state becomes `RECONNECTING` (default 3) |
 | `VPN_HEALTH_FAIL_SECONDS` | If probes keep failing this long, the tunnel is stopped and state becomes `AUTH_REQUIRED` so you can run `vpn-login` again (default 120; 0 disables) |
 | `VPN_PROXY_PORT` | `9876` inside the container |
+| `VPN_LOGIN_TIMEOUT` | Seconds an interactive `vpn-login` may wait at its prompts (default 300; 0 disables). Closing the terminal does not end a `docker exec` session, so this keeps an abandoned login from blocking later ones |
 | `VPN_CONTAINER_NAME` | Container name used in the `docker exec ... vpn-login` hints printed to the logs (set by `build/compose.yaml`). Unset: the short container ID |
 
 ### Troubleshooting
@@ -134,7 +135,7 @@ You can find the Docker image for **openconnect-ocproxy** on the GitHub Containe
 docker pull ghcr.io/matteosecli/openconnect-ocproxy:latest
 ```
 
-The image is published on the [GitHub Container Registry](https://github.com/matteosecli/openconnect-ocproxy/pkgs/container/openconnect-ocproxy) as a multi-arch (amd64/arm64) image. Besides `latest` and the image version (e.g. `2.2.0`), it is tagged with its components, e.g. `openconnect-9.21`, `ocproxy-2.0.0`, `alpine-3.24.3`.
+The image is published on the [GitHub Container Registry](https://github.com/matteosecli/openconnect-ocproxy/pkgs/container/openconnect-ocproxy) as a multi-arch (amd64/arm64) image. Besides `latest` and the image version (e.g. `2.3.0`), it is tagged with its components, e.g. `openconnect-9.21`, `ocproxy-2.0.0`, `alpine-3.24.3`.
 
 ## License
 

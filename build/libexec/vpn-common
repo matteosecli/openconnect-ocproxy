@@ -27,7 +27,7 @@ config_args() {
     }
     local name value
     for name in VPN_RECONNECT_TIMEOUT VPN_STARTUP_TIMEOUT VPN_EXPIRY_WARNING_SECONDS \
-                VPN_HEALTH_INTERVAL VPN_HEALTH_FAILURES VPN_HEALTH_FAIL_SECONDS; do
+                VPN_HEALTH_INTERVAL VPN_HEALTH_FAILURES VPN_HEALTH_FAIL_SECONDS VPN_LOGIN_TIMEOUT; do
         value=${!name:-}
         [[ -z $value || $value =~ ^(0|[1-9][0-9]{0,7})$ ]] || {
             echo 'Invalid numeric VPN timeout setting.' >&2; return 1;
