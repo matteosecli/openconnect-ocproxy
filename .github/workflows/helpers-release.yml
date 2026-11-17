@@ -1,0 +1,91 @@
+name: Helpers release
+
+# Builds the login helpers (macOS app, Linux archive, SHA256SUMS) with host/package.sh.
+# Run it manually from main with "publish" ticked to release: it tags the commit
+# helpers-v<host/VERSION> and creates the GitHub release with host/release-notes/<version>.md
+# as its notes. So, to release: bump host/VERSION, add the notes file, merge, run this.
+# Without "publish", and on pull requests, the files are only kept as a workflow artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Tag and publish the release (otherwise build only)
+        type: boolean
+        default: false
+  pull_request:
+    branches: [ "main" ]
+    paths: [ "host/**", ".github/workflows/helpers-release.yml" ]
+
+jobs:
+  build:
+    name: Build helpers
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: v
+        run: echo "version=$(cat host/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Check script syntax
+        run: |
+          for f in host/package.sh host/macos/build.sh host/common/*.sh host/linux/*.sh; do bash -n "$f"; done
+
+      # Also checks that the app is universal (x86_64 and arm64) and signed.
+      - name: Build release files
+        run: sh host/package.sh "$RUNNER_TEMP/release"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helpers-${{ steps.v.outputs.version }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      TAG: helpers-v${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check before publishing
+        run: |
+          set -eu
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "Releases are published from main only (this is $GITHUB_REF)."; exit 1; }
+          [ -s "host/release-notes/$VERSION.md" ] || { echo "Missing release notes: host/release-notes/$VERSION.md"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists; bump host/VERSION for a new release."; exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: helpers-${{ needs.build.outputs.version }}
+          path: release
+
+      - name: Verify checksums
+        working-directory: release
+        run: sha256sum -c SHA256SUMS
+
+      - name: Tag the commit
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Login helpers $VERSION (macOS and Linux)" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Create the release
+        run: |
+          gh release create "$TAG" release/* --verify-tag \
+            --title "Login helpers $VERSION" --notes-file "host/release-notes/$VERSION.md"
